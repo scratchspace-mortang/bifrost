@@ -28,6 +28,11 @@ func TestValidateCuratedEffortRow(t *testing.T) {
 	if err := ValidateCuratedEffortRow(noneOnly); err == nil || !strings.Contains(err.Error(), "no rung") {
 		t.Fatalf("none-only row accepted or wrong error: %v", err)
 	}
+	badField := testRow()
+	badField.UpstreamField = "reasoning.effort"
+	if err := ValidateCuratedEffortRow(badField); err == nil || !strings.Contains(err.Error(), "cannot be written") {
+		t.Fatalf("unwritable upstream field accepted: %v", err)
+	}
 	partial := testRow()
 	delete(partial.LevelMap, "high")
 	if err := ValidateCuratedEffortRow(partial); err == nil || !strings.Contains(err.Error(), "no map entry") {

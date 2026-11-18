@@ -6,6 +6,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func chatInput() []schemas.ChatMessage {
+	return []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+}
+
 func curatedRow() schemas.CuratedEffortRow {
 	return schemas.CuratedEffortRow{
 		Provider: "nous-custom", Model: "tencent/hy4-flash:free",
@@ -19,7 +23,7 @@ func chatRequestWithReasoning(effort *string, budget *int) *schemas.BifrostChatR
 	return &schemas.BifrostChatRequest{
 		Provider: "nous-custom",
 		Model:    "tencent/hy4-flash:free",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Input:    chatInput(),
 		Params: &schemas.ChatParameters{
 			MaxCompletionTokens: budget,
 			Reasoning:           &schemas.ChatReasoning{Effort: effort, MaxTokens: budget},
@@ -84,7 +88,7 @@ func chatRequestWithoutReasoning(reasoning *schemas.ChatReasoning) *schemas.Bifr
 	return &schemas.BifrostChatRequest{
 		Provider: "nous-custom",
 		Model:    "tencent/hy4-flash:free",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Input:    chatInput(),
 		Params:   &schemas.ChatParameters{Reasoning: reasoning},
 	}
 }
@@ -152,7 +156,7 @@ func TestCuratedBudgetOmittedLevelNeverReachesWire(t *testing.T) {
 	chat := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: "nous-custom",
 		Model:    "tencent/hy4-flash:free",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Input:    chatInput(),
 		Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(1000)}},
 	})
 	if chat == nil || (chat.ChatParameters.Reasoning != nil && chat.ChatParameters.Reasoning.Effort != nil) {
@@ -175,6 +179,81 @@ func TestCuratedBudgetOmittedLevelNeverReachesWire(t *testing.T) {
 	}
 }
 
+func TestNoEffortDefaultRespectsExplicitDisable(t *testing.T) {
+	schemas.ResetCuratedEfforts()
+	t.Cleanup(schemas.ResetCuratedEfforts)
+	if err := schemas.RegisterCuratedEffort(curatedRow()); err != nil {
+		t.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{name: "curated", provider: "nous-custom", model: "tencent/hy4-flash:free"},
+		{name: "uncurated reasoning-capable", provider: schemas.OpenAI, model: "gpt-5.1"},
+	} {
+		t.Run(tc.name+"/disabled", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    chatInput(),
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(false)}},
+			}
+			out := ToOpenAIChatRequest(ctx, req)
+			if out == nil || (out.ChatParameters.Reasoning != nil && out.ChatParameters.Reasoning.Effort != nil) {
+				t.Fatalf("explicit disable was overridden: %+v", out)
+			}
+		})
+		t.Run(tc.name+"/enabled", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    chatInput(),
+				Params:   &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Enabled: schemas.Ptr(true)}},
+			}
+			out := ToOpenAIChatRequest(ctx, req)
+			if out == nil || out.ChatParameters.Reasoning == nil || out.ChatParameters.Reasoning.Effort == nil ||
+				*out.ChatParameters.Reasoning.Effort != "high" {
+				t.Fatalf("enabled model did not get nearest high: %+v", out)
+			}
+		})
+	}
+}
+
+func TestUncuratedReasoningCapableGetsNearestHigh(t *testing.T) {
+	schemas.ResetCuratedEfforts()
+	t.Cleanup(schemas.ResetCuratedEfforts)
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	out := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.1",
+		Input:    chatInput(),
+		Params:   &schemas.ChatParameters{},
+	})
+	if out == nil || out.ChatParameters.Reasoning == nil || out.ChatParameters.Reasoning.Effort == nil ||
+		*out.ChatParameters.Reasoning.Effort != "high" {
+		t.Fatalf("uncurated reasoning model did not get nearest high: %+v", out)
+	}
+
+	resp := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.1",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+		Params: &schemas.ResponsesParameters{},
+	})
+	if resp == nil || resp.ResponsesParameters.Reasoning == nil || resp.ResponsesParameters.Reasoning.Effort == nil ||
+		*resp.ResponsesParameters.Reasoning.Effort != "high" {
+		t.Fatalf("uncurated reasoning model did not get nearest high on responses: %+v", resp)
+	}
+}
+
 func TestUncuratedNoEffortGetsNoDefault(t *testing.T) {
 	schemas.ResetCuratedEfforts()
 	t.Cleanup(schemas.ResetCuratedEfforts)
@@ -183,7 +262,7 @@ func TestUncuratedNoEffortGetsNoDefault(t *testing.T) {
 	chat := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: "nous-custom",
 		Model:    "plain-model",
-		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Input:    chatInput(),
 		Params:   &schemas.ChatParameters{},
 	})
 	if chat == nil || (chat.ChatParameters.Reasoning != nil && chat.ChatParameters.Reasoning.Effort != nil) {

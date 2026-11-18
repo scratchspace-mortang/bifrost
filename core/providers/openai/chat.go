@@ -280,6 +280,11 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 // the levels for its model and wins here too; an uncurated model only gets a
 // default when it declares reasoning support.
 func (req *OpenAIChatRequest) defaultEffortLevel(caps schemas.ModelCaps) (string, bool) {
+	// An explicit disable is a decision, not an absent effort. Injecting a
+	// default here would spend reasoning tokens the caller refused.
+	if r := req.ChatParameters.Reasoning; r != nil && r.Enabled != nil && !*r.Enabled {
+		return "", false
+	}
 	if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
 		return schemas.CuratedNearestHigh(string(req.Provider), req.Model)
 	}

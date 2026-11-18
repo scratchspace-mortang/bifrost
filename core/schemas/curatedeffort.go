@@ -46,6 +46,11 @@ func ValidateCuratedEffortRow(row CuratedEffortRow) error {
 	if strings.TrimSpace(row.UpstreamField) == "" {
 		return fmt.Errorf("curated effort row needs an upstream field name")
 	}
+	// Only the top-level reasoning_effort key can be written today. Refuse a
+	// field name the converters never emit instead of storing a silent no-op.
+	if row.UpstreamField != "reasoning_effort" {
+		return fmt.Errorf("upstream field %q cannot be written yet; only reasoning_effort is supported", row.UpstreamField)
+	}
 	if len(row.Levels) == 0 {
 		return fmt.Errorf("curated effort row needs at least one level")
 	}

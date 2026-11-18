@@ -114,6 +114,9 @@ func (s *RDBConfigStore) LoadCuratedEfforts(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(rows) == 0 && s.logger != nil {
+		s.logger.Warn("reasoning effort curation table is empty; effort-bearing requests will be refused until rows are written")
+	}
 	schemas.ResetCuratedEfforts()
 	for _, req := range rows {
 		if err := schemas.RegisterCuratedEffort(schemas.CuratedEffortRow{
