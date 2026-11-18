@@ -126,6 +126,8 @@ func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
 	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
 	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
+	r.POST("/api/reasoning-effort-curation", lib.ChainMiddlewares(h.putCuratedEffort, middlewares...))
+	r.GET("/api/reasoning-effort-curation", lib.ChainMiddlewares(h.listCuratedEfforts, middlewares...))
 }
 
 // getVersion handles GET /api/version - Get the current version

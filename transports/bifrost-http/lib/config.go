@@ -1071,6 +1071,17 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	}
 	// else: ConfigStoreConfig is present but Enabled == false — leave ConfigStore nil
 
+	// Load curated reasoning-effort rows before any request is served. The
+	// narrow assertion keeps stores without curation support (and test mocks)
+	// valid; only the SQLite config store implements it.
+	if loader, ok := config.ConfigStore.(interface {
+		LoadCuratedEfforts(context.Context) error
+	}); ok {
+		if err = loader.LoadCuratedEfforts(ctx); err != nil {
+			return fmt.Errorf("failed to load curated reasoning efforts: %w", err)
+		}
+	}
+
 	// Clear restart required flag on server startup
 	if config.ConfigStore != nil {
 		if err = config.ConfigStore.ClearRestartRequiredConfig(ctx); err != nil {

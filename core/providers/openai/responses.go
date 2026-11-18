@@ -629,9 +629,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			reasoningCopy := *req.ResponsesParameters.Reasoning
 			req.ResponsesParameters.Reasoning = &reasoningCopy
 			if req.ResponsesParameters.Reasoning.Effort != nil {
-				// Native field is provided, use it (and clear max_tokens)
+				// Native field is provided, use it (and clear max_tokens).
+				// A curated row names the level written for its model.
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
+				level := caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel))
+				if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
+					level = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
+				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(level)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
@@ -642,6 +647,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
 				}
 				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
+				// Budget-derived levels take the same curated path as caller levels.
+				effort = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil

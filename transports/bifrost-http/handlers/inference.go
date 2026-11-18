@@ -695,6 +695,60 @@ type ResponsesRequest struct {
 	Input ResponsesRequestInput `json:"input"`
 	BifrostParams
 	schemas.ResponsesParameters
+
+	// Five local effort names accepted on this endpoint too.
+	ReasoningEffortAlias *string `json:"reasoning_effort"`
+	EffortAlias          *string `json:"effort"`
+	ThinkingLevel        *string `json:"thinking.level"`
+	ThinkingLevelFlat    *string `json:"thinking_level"`
+}
+
+// foldResponsesEffortAliases folds the four flat effort names into the nested
+// reasoning object and refuses two names with different values.
+func (r *ResponsesRequest) foldResponsesEffortAliases() error {
+	names := []struct {
+		name  string
+		value *string
+	}{
+		{"reasoning_effort", r.ReasoningEffortAlias},
+		{"reasoning.effort", nil},
+		{"effort", r.EffortAlias},
+		{"thinking.level", r.ThinkingLevel},
+		{"thinking_level", r.ThinkingLevelFlat},
+	}
+	if r.ResponsesParameters.Reasoning != nil {
+		names[1].value = r.ResponsesParameters.Reasoning.Effort
+	}
+	for i, a := range names {
+		if a.value == nil {
+			continue
+		}
+		for _, b := range names[i+1:] {
+			if b.value != nil && *a.value != *b.value {
+				return fmt.Errorf("both %s and %s carry different reasoning effort values and cannot be present at the same time", a.name, b.name)
+			}
+		}
+	}
+	if r.ResponsesParameters.Reasoning == nil {
+		if r.ReasoningEffortAlias == nil && r.EffortAlias == nil && r.ThinkingLevel == nil && r.ThinkingLevelFlat == nil {
+			return nil
+		}
+		r.ResponsesParameters.Reasoning = &schemas.ResponsesParametersReasoning{}
+	}
+	effort := r.ReasoningEffortAlias
+	if effort == nil {
+		effort = r.EffortAlias
+	}
+	if effort == nil {
+		effort = r.ThinkingLevel
+	}
+	if effort == nil {
+		effort = r.ThinkingLevelFlat
+	}
+	if effort != nil {
+		r.ResponsesParameters.Reasoning.Effort = effort
+	}
+	return nil
 }
 
 // CompactionHTTPRequest is a bifrost compaction request (subset of responses fields)
@@ -1205,6 +1259,16 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		}
 	}
 	req.ChatParameters.ExtraParams = base.ExtraParams
+
+	var effort *string
+	var budget *int
+	if req.ChatParameters.Reasoning != nil {
+		effort = req.ChatParameters.Reasoning.Effort
+		budget = req.ChatParameters.Reasoning.MaxTokens
+	}
+	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget); err != nil {
+		return nil, nil, err
+	}
 	return req, &schemas.BifrostChatRequest{
 		Provider:  base.Provider,
 		Model:     base.ModelName,
@@ -1268,7 +1332,20 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 	if len(req.Input.ResponsesRequestInputArray) == 0 && req.Input.ResponsesRequestInputStr == nil {
 		return nil, nil, fmt.Errorf("input is required for responses")
 	}
+	if err := req.foldResponsesEffortAliases(); err != nil {
+		return nil, nil, err
+	}
 	req.ResponsesParameters.ExtraParams = base.ExtraParams
+
+	var effort *string
+	var budget *int
+	if req.ResponsesParameters.Reasoning != nil {
+		effort = req.ResponsesParameters.Reasoning.Effort
+		budget = req.ResponsesParameters.Reasoning.MaxTokens
+	}
+	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget); err != nil {
+		return nil, nil, err
+	}
 
 	input := req.Input.ResponsesRequestInputArray
 	if input == nil {

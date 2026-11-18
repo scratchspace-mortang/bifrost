@@ -336,6 +336,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_enforce_scim_auth_column"}, run: migrationAddEnforceSCIMAuthColumn},
 	{IDs: []string{"add_enforce_auth_on_inference_column"}, run: migrationAddEnforceAuthOnInferenceColumn},
 	{IDs: []string{"reconcile_pricing_overrides_table"}, run: migrationReconcilePricingOverridesTable},
+	{IDs: []string{"create_reasoning_effort_curation_table"}, run: migrationCreateReasoningEffortCurationTable},
 	{IDs: []string{"add_encryption_columns"}, run: migrationAddEncryptionColumns},
 	{IDs: []string{"add_output_cost_per_video_per_second_and_output_cost_per_second_columns"}, run: migrationAddOutputCostPerVideoPerSecond},
 	{IDs: []string{"drop_enable_governance_column"}, run: migrationDropEnableGovernanceColumn},
@@ -13772,3 +13773,40 @@ func migrationMigrateVKStandaloneLimitsToModelConfigs(ctx context.Context, db *g
 	return nil
 }
 
+
+// migrationCreateReasoningEffortCurationTable creates the local curated
+// reasoning-effort table. It is keyed by provider and model only.
+func migrationCreateReasoningEffortCurationTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "create_reasoning_effort_curation_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if !mgr.HasTable(&tables.TableReasoningEffortCuration{}) {
+				if err := mgr.CreateTable(&tables.TableReasoningEffortCuration{}); err != nil {
+					return fmt.Errorf("failed to create reasoning effort curation table: %w", err)
+				}
+				return nil
+			}
+			if err := tx.AutoMigrate(&tables.TableReasoningEffortCuration{}); err != nil {
+				return fmt.Errorf("failed to automigrate reasoning effort curation table: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mgr := tx.Migrator()
+			if mgr.HasTable(&tables.TableReasoningEffortCuration{}) {
+				return mgr.DropTable(&tables.TableReasoningEffortCuration{})
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}

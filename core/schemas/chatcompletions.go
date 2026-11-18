@@ -261,6 +261,9 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 		ReasoningEffort    *string `json:"reasoning_effort"` // only for input
 		ReasoningMaxTokens *int    `json:"reasoning_max_tokens"`
 		ReasoningDisplay   *string `json:"reasoning_display"`
+		Effort             *string `json:"effort"`
+		ThinkingLevel      *string `json:"thinking.level"`
+		ThinkingLevelFlat  *string `json:"thinking_level"`
 	}
 
 	aux.Alias = (*Alias)(cp)
@@ -272,9 +275,31 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 
 	// Now aux.Reasoning (from Alias) and aux.ReasoningEffort are filled
 
-	// Validate that specific fields don't conflict
-	if aux.ReasoningEffort != nil && aux.Reasoning != nil && aux.Reasoning.Effort != nil {
-		return fmt.Errorf("both reasoning_effort and reasoning.effort cannot be present at the same time")
+	// Five local names fold into one internal effort. Two names with different
+	// values are refused, naming both fields; the same value in two names is
+	// accepted.
+	effortNames := []struct {
+		name  string
+		value *string
+	}{
+		{"reasoning_effort", aux.ReasoningEffort},
+		{"reasoning.effort", nil},
+		{"effort", aux.Effort},
+		{"thinking.level", aux.ThinkingLevel},
+		{"thinking_level", aux.ThinkingLevelFlat},
+	}
+	if cp.Reasoning != nil {
+		effortNames[1].value = cp.Reasoning.Effort
+	}
+	for i, a := range effortNames {
+		if a.value == nil {
+			continue
+		}
+		for _, b := range effortNames[i+1:] {
+			if b.value != nil && *a.value != *b.value {
+				return fmt.Errorf("both %s and %s carry different reasoning effort values and cannot be present at the same time", a.name, b.name)
+			}
+		}
 	}
 	if aux.ReasoningMaxTokens != nil && aux.Reasoning != nil && aux.Reasoning.MaxTokens != nil {
 		return fmt.Errorf("both reasoning_max_tokens and reasoning.max_tokens cannot be present at the same time")
@@ -283,13 +308,20 @@ func (cp *ChatParameters) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("both reasoning_display and reasoning.display cannot be present at the same time")
 	}
 
-	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil || aux.ReasoningDisplay != nil {
+	if aux.ReasoningEffort != nil || aux.ReasoningMaxTokens != nil || aux.ReasoningDisplay != nil ||
+		aux.Effort != nil || aux.ThinkingLevel != nil || aux.ThinkingLevelFlat != nil {
 		if cp.Reasoning == nil {
 			cp.Reasoning = &ChatReasoning{}
 		}
 		// Merge top-level fields into the reasoning object
 		if aux.ReasoningEffort != nil {
 			cp.Reasoning.Effort = aux.ReasoningEffort
+		} else if aux.Effort != nil {
+			cp.Reasoning.Effort = aux.Effort
+		} else if aux.ThinkingLevel != nil {
+			cp.Reasoning.Effort = aux.ThinkingLevel
+		} else if aux.ThinkingLevelFlat != nil {
+			cp.Reasoning.Effort = aux.ThinkingLevelFlat
 		}
 		if aux.ReasoningMaxTokens != nil {
 			cp.Reasoning.MaxTokens = aux.ReasoningMaxTokens
