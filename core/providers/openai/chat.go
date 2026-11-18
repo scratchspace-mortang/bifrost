@@ -275,36 +275,70 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	}
 }
 
+// defaultEffortLevel returns the gateway's nearest-to-high default for a
+// request that carries neither an effort nor a budget. A curated row declares
+// the levels for its model and wins here too; an uncurated model only gets a
+// default when it declares reasoning support.
+func (req *OpenAIChatRequest) defaultEffortLevel(caps schemas.ModelCaps) (string, bool) {
+	if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
+		return schemas.CuratedNearestHigh(string(req.Provider), req.Model)
+	}
+	reasons := caps.SupportsReasoning(IsOpenAIReasoningModel(caps.Model()))
+	// A default is a categorical effort label, so a model whose datasheet
+	// rejects that field must keep sending nothing.
+	if !reasons || schemas.IsAnthropicModelFamily(nil, caps.Model()) ||
+		caps.FieldUnsupported(schemas.FieldReasoningEffort, false) ||
+		!caps.SupportsReasoningEffort(reasons) {
+		return "", false
+	}
+	return schemas.NearestHighFrom(caps.ReasoningEffortLevels(defaultEffortControl(caps.Model())))
+}
+
 func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
-	if req.ChatParameters.Reasoning != nil {
-		reasoningCopy := *req.ChatParameters.Reasoning
-		req.ChatParameters.Reasoning = &reasoningCopy
-		if req.ChatParameters.Reasoning.Effort != nil {
-			// Native field is provided, use it (and clear max_tokens).
-			// A curated row is the only ladder source for its model: its
-			// named level is written as-is, with no datasheet rename or snap.
-			effort := *req.ChatParameters.Reasoning.Effort
-			level := caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model()))
-			if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
-				level = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
-			}
+	if req.ChatParameters.Reasoning == nil {
+		if level, ok := req.defaultEffortLevel(caps); ok {
+			req.ChatParameters.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(level)}
+		}
+		return
+	}
+	reasoningCopy := *req.ChatParameters.Reasoning
+	req.ChatParameters.Reasoning = &reasoningCopy
+	if req.ChatParameters.Reasoning.Effort != nil {
+		// Native field is provided, use it (and clear max_tokens).
+		// A curated row is the only ladder source for its model: its
+		// named level is written as-is, with no datasheet rename or snap.
+		effort := *req.ChatParameters.Reasoning.Effort
+		level := caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model()))
+		if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
+			level = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
+		}
+		if level == "" {
+			// A curated row that omits this level is a refusal, not a pass-through.
+			req.ChatParameters.Reasoning = nil
+			return
+		}
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr(level)
+		// Clear max_tokens since OpenAI doesn't use it
+		req.ChatParameters.Reasoning.MaxTokens = nil
+	} else if req.ChatParameters.Reasoning.MaxTokens != nil {
+		// Estimate effort from max_tokens. Ingress and this write seam use the
+		// same converter and ceiling, so they cannot derive different levels.
+		maxTokens := *req.ChatParameters.Reasoning.MaxTokens
+		maxCompletionTokens := schemas.ReasoningMaxOutput(req.Provider, req.Model, req.ChatParameters.MaxCompletionTokens)
+		effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
+		// A budget-derived level leaves the gateway through the same curated
+		// mapping as a caller's level, so it cannot be one the row omits.
+		effort = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
+		if effort == "" {
+			req.ChatParameters.Reasoning = nil
+			return
+		}
+		req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
+		// Clear max_tokens since OpenAI doesn't use it
+		req.ChatParameters.Reasoning.MaxTokens = nil
+	} else {
+		if level, ok := req.defaultEffortLevel(caps); ok {
 			req.ChatParameters.Reasoning.Effort = schemas.Ptr(level)
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
-		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
-			// Estimate effort from max_tokens
-			maxTokens := *req.ChatParameters.Reasoning.MaxTokens
-			maxCompletionTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, req.Model, DefaultCompletionMaxTokens)
-			if req.ChatParameters.MaxCompletionTokens != nil {
-				maxCompletionTokens = *req.ChatParameters.MaxCompletionTokens
-			}
-			effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxCompletionTokens)
-			// A budget-derived level leaves the gateway through the same curated
-			// mapping as a caller's level, so it cannot be one the row omits.
-			effort = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(effort)
-			// Clear max_tokens since OpenAI doesn't use it
-			req.ChatParameters.Reasoning.MaxTokens = nil
 		}
 	}
 }

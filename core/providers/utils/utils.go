@@ -4209,38 +4209,7 @@ func GetReasoningEffortFromBudgetTokens(
 	minBudgetTokens int,
 	maxTokens int,
 ) string {
-	if budgetTokens <= 0 {
-		return "none"
-	}
-
-	// Defensive defaults
-	if maxTokens <= 0 {
-		return "medium"
-	}
-
-	// Normalize budget
-	if budgetTokens < minBudgetTokens {
-		budgetTokens = minBudgetTokens
-	}
-	if budgetTokens > maxTokens {
-		budgetTokens = maxTokens
-	}
-
-	// Avoid division by zero
-	if maxTokens <= minBudgetTokens {
-		return "high"
-	}
-
-	ratio := float64(budgetTokens-minBudgetTokens) / float64(maxTokens-minBudgetTokens)
-
-	switch {
-	case ratio <= 0.25:
-		return "low"
-	case ratio <= 0.60:
-		return "medium"
-	default:
-		return "high"
-	}
+	return schemas.ReasoningLevelFromBudget(budgetTokens, minBudgetTokens, maxTokens)
 }
 
 // GetBudgetTokensFromReasoningEffort converts reasoning effort into a reasoning token budget.

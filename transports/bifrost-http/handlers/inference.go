@@ -1266,7 +1266,8 @@ func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) 
 		effort = req.ChatParameters.Reasoning.Effort
 		budget = req.ChatParameters.Reasoning.MaxTokens
 	}
-	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget); err != nil {
+	maxOutput := schemas.ReasoningMaxOutput(base.Provider, base.ModelName, req.ChatParameters.MaxCompletionTokens)
+	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget, maxOutput); err != nil {
 		return nil, nil, err
 	}
 	return req, &schemas.BifrostChatRequest{
@@ -1343,7 +1344,8 @@ func prepareResponsesRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Res
 		effort = req.ResponsesParameters.Reasoning.Effort
 		budget = req.ResponsesParameters.Reasoning.MaxTokens
 	}
-	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget); err != nil {
+	maxOutput := schemas.ReasoningMaxOutput(base.Provider, base.ModelName, req.ResponsesParameters.MaxOutputTokens)
+	if err := schemas.ValidateCuratedRequest(string(base.Provider), base.ModelName, effort, budget, maxOutput); err != nil {
 		return nil, nil, err
 	}
 

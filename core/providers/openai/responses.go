@@ -622,9 +622,30 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 		}
 
-		// Handle reasoning parameter: OpenAI uses effort-based reasoning
-		// Priority: effort (native) > max_tokens (estimated)
-		if req.ResponsesParameters.Reasoning != nil {
+		// Default effort for a request with neither an effort nor a budget.
+		// A curated row declares its model's levels and wins here; an
+		// uncurated model only gets a default when it declares reasoning.
+		responsesDefault := func() (string, bool) {
+			if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
+				return schemas.CuratedNearestHigh(string(req.Provider), req.Model)
+			}
+			reasons := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
+			// A default is a categorical effort label, so a model whose datasheet
+			// rejects that field must keep sending nothing.
+			if !reasons || schemas.IsAnthropicModelFamily(nil, capModel) ||
+				caps.FieldUnsupported(schemas.FieldReasoningEffort, false) ||
+				!caps.SupportsReasoningEffort(reasons) {
+				return "", false
+			}
+			return schemas.NearestHighFrom(caps.ReasoningEffortLevels(defaultEffortControl(capModel)))
+		}
+		if req.ResponsesParameters.Reasoning == nil {
+			if level, ok := responsesDefault(); ok {
+				req.ResponsesParameters.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(level)}
+			}
+		} else {
+			// Handle reasoning parameter: OpenAI uses effort-based reasoning
+			// Priority: effort (native) > max_tokens (estimated)
 			// Clone the Reasoning pointer to avoid mutating the original params
 			reasoningCopy := *req.ResponsesParameters.Reasoning
 			req.ResponsesParameters.Reasoning = &reasoningCopy
@@ -636,22 +657,34 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				if _, curated := schemas.CuratedEffortFor(string(req.Provider), req.Model); curated {
 					level = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
 				}
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(level)
+				if level == "" {
+					// A curated row that omits this level is a refusal, not a pass-through.
+					req.ResponsesParameters.Reasoning.Effort = nil
+				} else {
+					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(level)
+				}
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
-				// Estimate effort from max_tokens
+				// Estimate effort from max_tokens. Ingress and this write seam use
+				// the same converter and ceiling, so they cannot disagree.
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
-				maxOutputTokens := utils.GetMaxOutputTokensOrDefault(req.Provider, capModel, DefaultCompletionMaxTokens)
-				if req.ResponsesParameters.MaxOutputTokens != nil {
-					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
-				}
+				maxOutputTokens := schemas.ReasoningMaxOutput(req.Provider, capModel, req.ResponsesParameters.MaxOutputTokens)
 				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
 				// Budget-derived levels take the same curated path as caller levels.
 				effort = schemas.ApplyCuratedEffort(string(req.Provider), req.Model, effort)
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
+				if effort == "" {
+					req.ResponsesParameters.Reasoning.Effort = nil
+				} else {
+					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
+				}
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
+			} else {
+				// No effort and no budget: use the same nearest-high default as chat.
+				if level, ok := responsesDefault(); ok {
+					req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(level)
+				}
 			}
 
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.

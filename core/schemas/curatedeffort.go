@@ -69,6 +69,13 @@ func ValidateCuratedEffortRow(row CuratedEffortRow) error {
 			return fmt.Errorf("mapped caller level %q is not listed by the row", caller)
 		}
 	}
+	// Every listed level must resolve. A listed-but-unmapped level is unusable
+	// at the write seam and makes the refusal message contradict the row.
+	for _, level := range row.Levels {
+		if _, exists := row.LevelMap[level]; !exists {
+			return fmt.Errorf("listed level %q has no map entry", level)
+		}
+	}
 	return nil
 }
 
@@ -132,13 +139,16 @@ func AllCuratedEfforts() []CuratedEffortRow {
 }
 
 // ApplyCuratedEffort maps a caller level to the upstream level the curated row
-// names. It returns the input unchanged when the model is not curated. It is
-// used on the caller path and on the budget-derived path so both write only a
-// level the row declares.
+// names. An uncurated model keeps its input. A curated model returns "" for a
+// level its row does not list, so a write path cannot emit a level outside the
+// row even on a route that skipped ingress validation.
 func ApplyCuratedEffort(provider, model, effort string) string {
 	row, ok := CuratedEffortFor(provider, model)
 	if !ok {
 		return effort
+	}
+	if !containsString(row.Levels, effort) {
+		return ""
 	}
 	if mapped, exists := row.LevelMap[effort]; exists {
 		return mapped
@@ -154,13 +164,36 @@ func CuratedUpstreamField(provider, model string) string {
 	return "reasoning_effort"
 }
 
-// BudgetLevel mirrors the gateway's budget-to-effort conversion for the
-// validation seam. The provider path still calls the canonical helper.
-func BudgetLevel(budget int) string {
+const (
+	// ReasoningBudgetFloor is the smallest budget the conversion counts as a rung.
+	ReasoningBudgetFloor = 1
+	// ReasoningBudgetCeiling is the default max output when neither the caller
+	// nor the model's capability record supplies one.
+	ReasoningBudgetCeiling = 4096
+	// MinReasoningBudgetCeiling is the smallest max output the write path uses.
+	MinReasoningBudgetCeiling = 16
+)
+
+// ReasoningLevelFromBudget is the single budget-to-effort conversion used at
+// ingress and at the provider write seam. The provider helper delegates here,
+// so a request cannot be accepted at one level and written at another.
+func ReasoningLevelFromBudget(budget, minBudget, maxOutput int) string {
 	if budget <= 0 {
 		return ReasoningEffortNone
 	}
-	ratio := float64(budget) / 100.0
+	if maxOutput <= 0 {
+		return ReasoningEffortMedium
+	}
+	if budget < minBudget {
+		budget = minBudget
+	}
+	if budget > maxOutput {
+		budget = maxOutput
+	}
+	if maxOutput <= minBudget {
+		return ReasoningEffortHigh
+	}
+	ratio := float64(budget-minBudget) / float64(maxOutput-minBudget)
 	switch {
 	case ratio <= 0.25:
 		return ReasoningEffortLow
@@ -171,10 +204,27 @@ func BudgetLevel(budget int) string {
 	}
 }
 
+// ReasoningMaxOutput resolves the ceiling the write path will use for a
+// budget: the caller's value when present, then the model's datasheet value,
+// then the default. Both ingress and the provider call this with the same
+// request value, so they derive the same level.
+func ReasoningMaxOutput(provider ModelProvider, model string, requested *int) int {
+	if requested != nil && *requested > 0 {
+		if *requested < MinReasoningBudgetCeiling {
+			return MinReasoningBudgetCeiling
+		}
+		return *requested
+	}
+	if caps := CapabilitiesFor(provider, model); caps != nil && caps.MaxOutputTokens != nil {
+		return *caps.MaxOutputTokens
+	}
+	return ReasoningBudgetCeiling
+}
+
 // ValidateCuratedRequest applies the reject rules at ingress. A request with
 // no effort and no budget is untouched. Any effort, including a derived one,
 // requires a curated row and a level that row lists.
-func ValidateCuratedRequest(provider, model string, effort *string, budget *int) error {
+func ValidateCuratedRequest(provider, model string, effort *string, budget *int, maxOutput int) error {
 	given := effort != nil
 	if !given && budget != nil && *budget > 0 {
 		given = true
@@ -190,9 +240,9 @@ func ValidateCuratedRequest(provider, model string, effort *string, budget *int)
 	if effort != nil {
 		value = *effort
 	} else {
-		value = BudgetLevel(*budget)
+		value = ReasoningLevelFromBudget(*budget, ReasoningBudgetFloor, maxOutput)
 	}
-	if _, listed := row.LevelMap[value]; !listed {
+	if !containsString(row.Levels, value) {
 		levels := append([]string(nil), row.Levels...)
 		sort.Strings(levels)
 		return fmt.Errorf("level %q is not listed for %s; its levels are %s", value, model, strings.Join(levels, ", "))
@@ -200,19 +250,16 @@ func ValidateCuratedRequest(provider, model string, effort *string, budget *int)
 	return nil
 }
 
-// CuratedNearestHigh returns the row's nearest rung to high, ties upward. none
-// is not a rung. It is used only for the default on a no-effort request.
-func CuratedNearestHigh(provider, model string) (string, bool) {
-	row, ok := CuratedEffortFor(provider, model)
-	if !ok {
-		return "", false
-	}
+// NearestHighFrom returns the nearest rung to high from an arbitrary ladder,
+// with ties broken upward. none is not a rung. It backs the default on a
+// no-effort, no-budget request.
+func NearestHighFrom(levels []string) (string, bool) {
 	order := []string{ReasoningEffortMinimal, ReasoningEffortLow, ReasoningEffortMedium,
 		ReasoningEffortHigh, ReasoningEffortXHigh, ReasoningEffortMax}
 	best, bestDistance := "", 0
 	target := 3 // high
 	for rung, candidate := range order {
-		if !containsString(row.Levels, candidate) {
+		if !containsString(levels, candidate) {
 			continue
 		}
 		distance := rung - target
@@ -224,4 +271,14 @@ func CuratedNearestHigh(provider, model string) (string, bool) {
 		}
 	}
 	return best, best != ""
+}
+
+// CuratedNearestHigh returns the row's nearest rung to high, ties upward. none
+// is not a rung. It is used only for the default on a no-effort request.
+func CuratedNearestHigh(provider, model string) (string, bool) {
+	row, ok := CuratedEffortFor(provider, model)
+	if !ok {
+		return "", false
+	}
+	return NearestHighFrom(row.Levels)
 }
